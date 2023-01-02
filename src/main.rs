@@ -1,47 +1,51 @@
 mod pool;
 
-use std::fs;
-use std::io::{BufRead, BufReader, Write};
-use std::net::{TcpListener, TcpStream};
-use crate::pool::ThreadPool;
+use std::error::Error;
+use async_std::fs;
+use async_std::net::{TcpListener, TcpStream};
+use futures_lite::{AsyncBufReadExt, AsyncWriteExt};
+use futures_lite::io::BufReader;
+use futures_lite::stream::StreamExt;
+// use crate::pool::ThreadPool;
 
-fn main() {
-    let listener = TcpListener::bind("127.0.0.1:1024").unwrap();
-    let pool = ThreadPool::build(4).unwrap();
-    for stream in listener.incoming() {
-        let st = stream.unwrap();
-        pool.execute(|| handle(st));
+#[async_std::main]
+async fn main() -> Result<(), Box<dyn Error>> {
+    let listener = TcpListener::bind("127.0.0.1:8080").await?;
+    // let pool = ThreadPool::build(4).unwrap();
+    loop {
+        let receive = listener.incoming().next().await;
+        if let Some(x) = receive {
+            handle(x?).await?;
+        }
     }
 }
 
-fn handle(mut con: TcpStream) {
-    let reader = BufReader::new(&mut con);
-    let rq: Vec<String> = reader
+async fn handle(mut con: TcpStream) -> Result<(), Box<dyn Error>> {
+    let mut rq = BufReader::new(&con)
         .lines()
-        .map(|x| x.unwrap())
+        .map(|x| x.unwrap_or_default())
         .take_while(|x| !x.is_empty())
-        .collect();
+        .next()
+        .await;
 
     println!("response: {:?}", rq);
-    if let Some(n) = rq.get(0) {
-        if "GET / HTTP/1.1".eq(n) {
+
+    if let Some(ref n) = rq {
+        let response = if "GET / HTTP/1.1".eq(n) {
             let status = "HTTP/1.1 200 OK";
-            let rp = fs::read_to_string("hello.html").unwrap();
+            let rp = fs::read_to_string("hello.html").await?;
             let length = rp.len();
 
-            let response =
-                format!("{status}\r\nContent-Length: {length}\r\n\r\n{rp}");
-
-            con.write_all(response.as_bytes()).unwrap();
+            format!("{status}\r\nContent-Length: {length}\r\n\r\n{rp}")
         } else {
             let status = "HTTP/1.1 404";
-            let rp = fs::read_to_string("404.html").unwrap();
+            let rp = fs::read_to_string("404.html").await?;
             let length = rp.len();
 
-            let response =
-                format!("{status}\r\nContent-Length: {length}\r\n\r\n{rp}");
-
-            con.write_all(response.as_bytes()).unwrap();
-        }
+            format!("{status}\r\nContent-Length: {length}\r\n\r\n{rp}")
+        };
+        con.write_all(response.as_bytes()).await?;
+        con.flush().await?;
     }
+    Ok({})
 }
